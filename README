@@ -1,0 +1,158 @@
+1) Set up a build environment
+ 1.1 Get a FreeBSD 10.1 or 11 Host, this can be a VM or baremetal host.
+ 1.2 Install devel/git devel/subversion gsed python devel/gmake
+   - pkg install devel/git devel/subversion  gsed python devel/gmake
+ 1.2 Get latest Kernel Sources
+   - svn co https://svn0.us-west.FreeBSD.org/base/releng/10.1 /usr/src
+    # svn co https://svn0.us-west.FreeBSD.org/base/releng/10.1 /usr/src
+      Error validating server certificate for 'https://svn0.us-west.freebsd.org:443':
+      - The certificate is not issued by a trusted authority. Use the
+        fingerprint to validate the certificate manually!
+      Certificate information:
+ 	- Hostname: svnmir.ysv.FreeBSD.org
+ 	- Valid: from Jul 29 22:01:21 2013 GMT until Dec 13 22:01:21 2040 GMT
+ 	- Issuer: clusteradm, FreeBSD.org, CA, US(clusteradm@FreeBSD.org)
+ 	- Fingerprint: 1C:BD:85:95:11:9F:EB:75:A5:4B:C8:A3:FE:08:E4:02:73:06:1E:61
+     (R)eject, accept (t)emporarily or accept (p)ermanently? p
+1.3 Get crochet source and uboot from
+     - mkdir /arm-images && cd /arm-images && git clone git@github.com:freebsd/crochet.git
+     - git clone git://github.com/gonzoua/u-boot-pi.git /arm-images/crochet/u-boot-rpi
+1.4 Build xdev
+    edit /etc/make.conf
+    WITHOUT_CLANG=yes
+    WITHOUT_CLANG_IS_CC=yes
+    WITH_GCC=yes
+    WITH_GNUCXX=yes
+  cd /usr/src && sudo make XDEV=arm XDEV_ARCH=armv6 WITH_GCC=1 WITH_GCC_BOOTSTRAP=1 WITHOUT_CLANG=1 WITHOUT_CLANG_BOOTSTRAP=1 WITHOUT_CLANG_IS_CC=1 WITHOUT_TESTS=1 xdev
+  after build comment out the lines added to /etc/make.conf
+
+2.0 Create board config file:
+board_setup RaspberryPi
+option Growfs
+option User jescarri
+FREEBSD_SRC=/usr/src
+
+customize_freebsd_partition () {
+    pw moduser root -V ${BOARD_FREEBSD_MOUNTPOINT}/etc/ -w yes
+    sed -i '' 's/^#PermitRootLogin.*/PermitRootLogin yes/' ${BOARD_FREEBSD_MOUNTPOINT}/etc/ssh/sshd_config
+    sed -i '' '/^ifconfig_ue0/d' ${BOARD_FREEBSD_MOUNTPOINT}/etc/rc.conf
+    cat <<EOT > ${BOARD_FREEBSD_MOUNTPOINT}/etc/rc.conf
+hostname="daemon-rpi"
+sshd_enable="YES"
+# Turn off a lot of standard stuff
+# for more free memory.
+cron_enable="NO"
+#devd is necessary for proper DHCP operation;
+# don't disable unless you know how to run DHCP manually.
+devd_enable="YES"
+syslogd_enable="NO"
+sendmail_enable="NO"
+sendmail_submit_enable="NO"
+sendmail_outbound_enable="NO"
+sendmail_msp_queue_enable="NO"
+ifconfig_ue0="DHCP"
+ntpd_enable="YES"
+ntpd_sync_on_start="YES"
+#### WiFi Config
+wlans_urtwn0="wlan0"
+ifconfig_wlan0="WPA DHCP"
+EOT
+cat <<EOT > ${BOARD_FREEBSD_MOUNTPOINT}/boot/loader.conf
+hw.bcm2835.sdhci.hs="0"
+legal.realtek.license_ack=1
+if_urtwn_load="YES"
+wlan_wep_load="YES"
+wlan_ccmp_load="YES"
+wlan_tkip_load="YES"
+wlan_scan_ap_load="YES"
+wlan_scan_sta_load="YES"
+boot_multicons="YES"
+boot_serial="YES"
+console="comconsole, vidconsole"
+comconsole_speed="115200"
+EOT
+cat <<EOT > ${BOARD_FREEBSD_MOUNTPOINT}/etc/wpa_supplicant.conf
+network={
+	ssid="YOUR_NETWORK_SSID"
+	psk="PASSWORD"
+}
+EOT
+    mkdir ${BOARD_FREEBSD_MOUNTPOINT}/root/.ssh
+    chmod +rw ${BOARD_FREEBSD_MOUNTPOINT}/root/.ssh
+    cp -Rp /root/.ssh/authorized_keys ${BOARD_FREEBSD_MOUNTPOINT}/root/.ssh/.
+    cp ${BOARD_FREEBSD_MOUNTPOINT}/usr/share/zoneinfo/America/Los_Angeles ${BOARD_FREEBSD_MOUNTPOINT}/etc/localtime
+}
+
+3.0 BUild FreeBSD image
+ ./crochet.sh -c config.sh
+
+
+
+---
+Build ARM Environment
+1) Set the Environment:
+    - install qemu-user-static
+      - pkg install qemu-user-static
+    - Build world
+# export TARGET=arm
+# TARGET_ARCH=armv6
+# EMULATOR=qemu-arm-static
+# DESTDIR=/arm-images/buildroot/blah
+# BUILDPATH=arm-bsd-user
+# export TARGET_ARCH
+# export EMULATOR
+# export DESTDIR
+# export BUILDPATH
+# export MAKEOBJDIRPREFIX=/arm-images/buildroot/obj
+
+   build world
+   make -j 8 TARGET=${TARGET} TARGET_ARCH=${TARGET_ARCH} buildworld
+   install world
+   make DESTDIR=${DESTDIR} TARGET=${TARGET} TARGET_ARCH=${TARGET_ARCH} installworld
+   Install Distribution
+   make DESTDIR=${DESTDIR} TARGET=${TARGET} TARGET_ARCH=${TARGET_ARCH} distribution
+
+Copy the qemu-arm emulator to the buildroot
+mkdir -p ${DESTDIR}/usr/local/bin
+cp /usr/local/bin/${EMULATOR} ${DESTDIR}/usr/local/bin/${EMULATOR}
+
+Install ports collection into the buildroot:
+cd /var/tmp
+fetch ftp://ftp.freebsd.org/pub/FreeBSD/ports/ports/ports.tar.gz
+cd ${DESTDIR}/usr
+tar -xpf /var/tmp/ports.tar.gz
+
+Mount devfs onto the buildroot
+# mkdir -p ${DESTDIR}/dev
+# mount -t devfs devfs ${DESTDIR}/dev
+
+chroot onto the buildroot
+
+chroot -u root ${DESTDIR} /usr/local/bin/${EMULATOR} /bin/sh
+
+Start ldconfig to create the ldconfig so you can build and link programs
+service ldconfig start
+
+-- DONE, LOG OUT OF THE CHROOT AND CREATE A TARBALL so you have a clean snapshot!.
+
+---
+How to cross compile your own kernel module.
+
+TARGET=arm
+TARGET_ARCH=armv6
+cd /usr/src
+make kernel-toolchain TARGET_ARCH=${TARGET_ARCH}
+
+Run the following command to set all the env variables so you can cross compile
+
+make buildenv TARGET_ARCH=${TARGET_ARCH} BUILDENV_SHELL=/bin/sh 
+Entering world for armv6:arm
+# cd /home/ec2-user/hello_world/
+# make
+# ls
+@		Makefile	export_syms	hello_world.c	hello_world.kld	hello_world.ko	hello_world.o	machine
+# file hello_world.ko
+hello_world.ko: ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV), dynamically linked, not stripped
+
+
+	
